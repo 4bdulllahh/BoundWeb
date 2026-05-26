@@ -10,7 +10,13 @@ const PORT = process.env.PORT || 3001;
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { 
+  cors: { 
+    origin: "https://theboundgame.vercel.app",
+    methods: ["GET", "POST"],
+    credentials: true
+  } 
+});
 
 const rooms = new Map();
 const suits = ['spades', 'hearts', 'clubs', 'diamonds'];

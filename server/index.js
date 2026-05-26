@@ -1127,8 +1127,18 @@ io.on('connection', socket => {
   });
 });
 
-const clientDist = path.join(__dirname, '../client/dist');
-app.use(express.static(clientDist));
-app.get('*', (req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    name: 'Bound backend',
+    frontend: 'https://theboundgame.vercel.app'
+  });
+});
 
-server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Bound backend running on port ${PORT}`);
+});

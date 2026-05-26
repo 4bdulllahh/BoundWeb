@@ -19,6 +19,8 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
+const MAX_NAME_LENGTH = 14;
+
 const socket = io(import.meta.env.PROD ? 'https://bound-backend-engine.onrender.com' : 'http://localhost:3001', {
   transports: ['websocket'],
   upgrade: false,

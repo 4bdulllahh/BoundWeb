@@ -19,7 +19,11 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const socket = io(import.meta.env.PROD ? 'https://bound-backend-engine.onrender.com' : 'http://localhost:3001');
+const socket = io(import.meta.env.PROD ? 'https://bound-backend-engine.onrender.com' : 'http://localhost:3001', {
+  transports: ['websocket'],
+  upgrade: false,
+  withCredentials: true
+});
 
 const suitSymbols = { hearts: '♥', spades: '♠', clubs: '♣', diamonds: '♦' };
 const suitNames = { hearts: 'Hearts', spades: 'Spades', clubs: 'Clubs', diamonds: 'Diamonds' };

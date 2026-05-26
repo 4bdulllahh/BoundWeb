@@ -30,7 +30,8 @@ const io = new Server(server, {
     origin: "https://theboundgame.vercel.app",
     methods: ["GET", "POST"],
     credentials: true
-  } 
+  }, 
+  transports: ["websocket"]
 });
 
 const rooms = new Map();

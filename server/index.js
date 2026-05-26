@@ -4,11 +4,26 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3001;
 
 const app = express();
+
+// PASTED CODE STARTS HERE
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "https://theboundgame.vercel.app");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+// PASTED CODE ENDS HERE
+
 const server = http.createServer(app);
 const io = new Server(server, { 
   cors: { 

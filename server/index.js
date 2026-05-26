@@ -25,12 +25,12 @@ app.use((req, res, next) => {
 // PASTED CODE ENDS HERE
 
 const server = http.createServer(app);
+
 const io = new Server(server, { 
   cors: { 
-    origin: "https://theboundgame.vercel.app",
-    methods: ["GET", "POST"],
-    credentials: true
-  }, 
+    origin: "*",
+    methods: ["GET", "POST"]
+  },
   transports: ["websocket"]
 });
 

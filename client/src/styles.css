@@ -2861,3 +2861,61 @@ button.closeButton svg,
     padding: 8px 10px 10px !important;
   }
 }
+
+/* Trick timing + perspective polish */
+.trickTable { isolation: isolate; }
+.trickSlot { z-index: 2; }
+.trick-bottom { bottom: 38px !important; }
+.trick-top { top: 18px !important; }
+.trick-left { left: 20px !important; }
+.trick-right { right: 20px !important; }
+.trickResultNotice {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  max-width: min(320px, 82%);
+  padding: 9px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(250, 204, 21, .38);
+  background: rgba(15, 23, 42, .88);
+  color: #fef3c7;
+  font-size: 13px;
+  font-weight: 950;
+  letter-spacing: .01em;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .34);
+  pointer-events: none;
+}
+.nextRoundCenter {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.nextRoundCenter .action {
+  pointer-events: auto;
+  margin: 0;
+}
+.seatMeta b,
+.playerRow b,
+.spectator span,
+.skipTrack span,
+.readyChip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.seatMeta b,
+.playerRow b,
+.spectator span {
+  max-width: 100%;
+}
+@media (max-width: 980px) {
+  .trick-bottom { bottom: 28px !important; }
+  .trick-top { top: 12px !important; }
+  .trick-left { left: 6px !important; }
+  .trick-right { right: 6px !important; }
+  .trickResultNotice { font-size: 12px; padding: 8px 12px; }
+}

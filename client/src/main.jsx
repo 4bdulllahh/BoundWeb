@@ -66,9 +66,10 @@ function App() {
 
 function Landing({ name, setName, roomCode, setRoomCode, error }) {
   const [showRules, setShowRules] = useState(false);
-  const create = () => socket.emit('createRoom', { name: name.trim() || 'Player' });
-  const join = () => socket.emit('joinRoom', { code: roomCode.trim().toUpperCase(), name: name.trim() || 'Player', mode: 'player' });
-  const spectate = () => socket.emit('joinRoom', { code: roomCode.trim().toUpperCase(), name: name.trim() || 'Spectator', mode: 'spectator' });
+  const cleanName = (fallback) => (name.trim().slice(0, MAX_NAME_LENGTH) || fallback);
+  const create = () => socket.emit('createRoom', { name: cleanName('Player') });
+  const join = () => socket.emit('joinRoom', { code: roomCode.trim().toUpperCase(), name: cleanName('Player'), mode: 'player' });
+  const spectate = () => socket.emit('joinRoom', { code: roomCode.trim().toUpperCase(), name: cleanName('Spectator'), mode: 'spectator' });
 
   return (
     <main className="landing landingSimple">
@@ -79,7 +80,7 @@ function Landing({ name, setName, roomCode, setRoomCode, error }) {
         <p>Bid, choose Trump Suit, defend with Jokers, call Bound, and race to 54 points.</p>
         <button className="secondary howButton" onClick={() => setShowRules(true)}><HelpCircle size={17}/> Rules / How to Play</button>
         <div className="formGrid">
-          <input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
+          <input placeholder="Your name" value={name} maxLength={MAX_NAME_LENGTH} onChange={e => setName(e.target.value.slice(0, MAX_NAME_LENGTH))} />
           <button onClick={create}>Create Room</button>
         </div>
         <div className="divider">or join an existing table</div>
@@ -155,7 +156,6 @@ function Game({ state, error }) {
               {state.phase === 'bidding' && <Bidding state={state} enabled={myBidTurn} />}
               {state.phase === 'chooseTrump' && <TrumpPicker state={state} enabled={canChooseTrump} />}
               {(state.phase === 'playing' || state.phase === 'roundover' || state.phase === 'gameover') && <Board state={state} />}
-              {state.phase === 'roundover' && <ActionButton onClick={() => socket.emit('nextRound', { code: state.code })}><RotateCcw size={16}/> Start Next Round</ActionButton>}
               {state.phase === 'gameover' && <GameOver state={state} isHost={isHost} />}
             </div>
           </div>
@@ -340,9 +340,17 @@ function SeatedTable({ state }) {
   );
 }
 
-function getSeatPositions() {
-  // Fixed table layout: Team A sits top/bottom, Team B sits left/right.
-  // This mirrors the real table instead of rotating differently for each player.
+function getSeatPositions(state) {
+  if (state?.meRole === 'player' && Number.isInteger(state.meSeat)) {
+    const me = state.meSeat;
+    return [
+      { seat: (me + 2) % 4, pos: 'top' },
+      { seat: (me + 3) % 4, pos: 'left' },
+      { seat: me, pos: 'bottom' },
+      { seat: (me + 1) % 4, pos: 'right' }
+    ];
+  }
+
   return [
     { seat: 0, pos: 'top' },
     { seat: 1, pos: 'left' },
@@ -548,15 +556,25 @@ function TrumpPicker({ state, enabled }) {
 }
 
 function Board({ state }) {
-  const positions = getSeatPositions();
+  const positions = getSeatPositions(state);
   const positionBySeat = Object.fromEntries(positions.map(({ seat, pos }) => [seat, pos]));
   const playsByPos = Object.fromEntries((state.trick || []).map(play => [positionBySeat[play.player], play]));
   const hasCards = (state.trick || []).length > 0;
+  const showNextRound = state.phase === 'roundover';
+  const showEmptyText = !hasCards && !showNextRound;
 
   return (
     <div className="board tableOnlyBoard">
       <div className="trickTable" aria-label="Current trick table">
-        {!hasCards && <p className="muted emptyTrick">No cards on the table yet.</p>}
+        {showEmptyText && <p className="muted emptyTrick">No cards on the table yet.</p>}
+        {state.trickResolving && state.trickResultMessage && <div className="trickResultNotice">{state.trickResultMessage}</div>}
+        {showNextRound && (
+          <div className="nextRoundCenter">
+            <ActionButton onClick={() => socket.emit('nextRound', { code: state.code })}>
+              <RotateCcw size={16}/> Start Next Round
+            </ActionButton>
+          </div>
+        )}
         {['top', 'left', 'right', 'bottom'].map(pos => {
           const play = playsByPos[pos];
           return (

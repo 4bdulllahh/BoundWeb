@@ -4,7 +4,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
 
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3001;
@@ -37,6 +36,8 @@ const io = new Server(server, {
 const rooms = new Map();
 const suits = ['spades', 'hearts', 'clubs', 'diamonds'];
 const TURN_SECONDS = 15;
+const TRICK_RESULT_DELAY_MS = 2000;
+const MAX_NAME_LENGTH = 14;
 const ranks = ['6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 const rankValue = Object.fromEntries(ranks.map((r, i) => [r, i + 6]));
 const suitSymbols = { spades: '♠', hearts: '♥', clubs: '♣', diamonds: '♦' };
@@ -60,6 +61,10 @@ function isActiveSeat(p) { return Boolean(p && !p.empty && p.id); }
 function occupiedSeatCount(room) { return room.players.filter(isActiveSeat).length; }
 function allActiveSeatsReady(room) { return room.players.length === 4 && room.players.every(p => isActiveSeat(p) && p.connected && p.ready); }
 function seatName(room, idx) { return isActiveSeat(room.players[idx]) ? room.players[idx].name : `Seat ${idx + 1}`; }
+function sanitizeName(name, fallback = 'Player') {
+  const clean = String(name || '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME_LENGTH);
+  return clean || fallback;
+}
 
 function createDeck() {
   const deck = [];
@@ -132,6 +137,9 @@ function roomPublic(room, socketId = null) {
     leader: room.leader,
     turn: room.turn,
     trick: room.trick,
+    trickResolving: Boolean(room.trickResolving),
+    trickWinner: room.trickWinner ?? null,
+    trickResultMessage: room.trickResultMessage || '',
     trickNumber: room.trickNumber,
     tricksWon: room.tricksWon,
     blackJokerUsed: room.blackJokerUsed,
@@ -176,6 +184,11 @@ function clearRoundStateToLobby(room, message) {
   room.leader = null;
   room.turn = null;
   room.trick = [];
+  room.trickResolving = false;
+  room.trickWinner = null;
+  room.trickResultMessage = '';
+  if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
+  room.trickResolveTimer = null;
   room.trickNumber = 0;
   room.tricksWon = [0, 0];
   room.blackJokerUsed = false;
@@ -209,6 +222,10 @@ function makeRoom(hostId, name) {
     leader: null,
     turn: null,
     trick: [],
+    trickResolving: false,
+    trickWinner: null,
+    trickResultMessage: '',
+    trickResolveTimer: null,
     trickNumber: 0,
     tricksWon: [0, 0],
     blackJokerUsed: false,
@@ -245,6 +262,11 @@ function resetForNewRound(room, dealer = null) {
   room.leader = null;
   room.turn = null;
   room.trick = [];
+  room.trickResolving = false;
+  room.trickWinner = null;
+  room.trickResultMessage = '';
+  if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
+  room.trickResolveTimer = null;
   room.trickNumber = 0;
   room.tricksWon = [0, 0];
   room.blackJokerUsed = false;
@@ -329,6 +351,11 @@ function redealAfterAllSkipped(room) {
   room.leader = null;
   room.turn = null;
   room.trick = [];
+  room.trickResolving = false;
+  room.trickWinner = null;
+  room.trickResultMessage = '';
+  if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
+  room.trickResolveTimer = null;
   room.trickNumber = 0;
   room.tricksWon = [0, 0];
   room.blackJokerUsed = false;
@@ -401,6 +428,11 @@ function finishMatch(room, winnerTeam, message, loserTeam = null, reason = 'boun
   // Clear active round state so no remaining hand/table state can block the
   // Game Over UI or the Start New Game flow.
   room.trick = [];
+  room.trickResolving = false;
+  room.trickWinner = null;
+  room.trickResultMessage = '';
+  if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
+  room.trickResolveTimer = null;
   room.turn = null;
   room.leader = null;
   room.nextDealer = null;
@@ -455,6 +487,7 @@ function checkEndOfTrickPenalty(room) {
 
 function validPlay(room, playerIdx, card) {
   if (room.phase !== 'playing') return { ok: false, msg: 'Not playing phase.' };
+  if (room.trickResolving) return { ok: false, msg: 'Wait for the trick result.' };
   if (room.turn !== playerIdx) return { ok: false, msg: 'Not your turn.' };
 
   const isLead = room.trick.length === 0;
@@ -492,46 +525,70 @@ function validPlay(room, playerIdx, card) {
   return { ok: true };
 }
 
-function finishTrick(room) {
+
+function computeTrickWinner(room) {
   const leadSuit = room.trick.find(play => play.card.type === 'normal')?.card.suit || null;
   let best = room.trick[0];
   for (const play of room.trick.slice(1)) {
     if (cardBeats(play, best, room.trump, leadSuit)) best = play;
   }
+  return best.player;
+}
 
-  const winner = best.player;
+function finishTrick(room) {
+  if (!room || room.trick.length !== 4 || room.trickResolving) return;
+  clearRoomTimer(room);
+
+  const winner = computeTrickWinner(room);
   room.tricksWon[teamOf(winner)] += 1;
+  room.trickResolving = true;
+  room.trickWinner = winner;
+  room.trickResultMessage = `Trick won by ${seatName(room, winner)} · ${teamLabel(teamOf(winner))}`;
+  room.turn = null;
+  room.message = room.trickResultMessage;
+
+  if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
+  room.trickResolveTimer = setTimeout(() => completeResolvedTrick(room.code), TRICK_RESULT_DELAY_MS);
+}
+
+function completeResolvedTrick(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room || !room.trickResolving) return;
+
+  const winner = room.trickWinner;
   room.trick = [];
+  room.trickResolving = false;
+  room.trickWinner = null;
+  room.trickResultMessage = '';
+  if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
+  room.trickResolveTimer = null;
 
   if (room.bound) {
     const bidderTeam = teamOf(room.bidWinner);
     if (teamOf(winner) !== bidderTeam) {
       const winningTeam = 1 - bidderTeam;
       finishMatch(room, winningTeam, `Bound failed. ${teamLabel(winningTeam)} wins the game.`, bidderTeam, 'bound');
+      emitRoom(room);
       return;
     }
 
-    // Bound success must end the match immediately after the 9th won trick,
-    // without falling through to normal round scoring or next-round logic.
     if (room.tricksWon[bidderTeam] === 9) {
       finishMatch(room, bidderTeam, `Bound succeeded. ${teamLabel(bidderTeam)} wins the game.`, 1 - bidderTeam, 'bound');
+      emitRoom(room);
       return;
     }
   }
 
-  if (checkEndOfTrickPenalty(room)) return;
-
-  // Smart Early Termination: after every completed trick, stop immediately
-  // when the bidding team has made the contract or can no longer make it.
-  if (checkSmartEarlyTermination(room)) return;
-
-  if (room.trickNumber >= 9) return scoreRound(room);
+  if (checkEndOfTrickPenalty(room)) { emitRoom(room); return; }
+  if (checkSmartEarlyTermination(room)) { emitRoom(room); return; }
+  if (room.trickNumber >= 9) { scoreRound(room); emitRoom(room); return; }
 
   room.trickNumber += 1;
   room.leader = winner;
   room.turn = winner;
   room.message = `${seatName(room, winner)} starts trick ${room.trickNumber}.`;
   checkStartOfTrickPenalty(room);
+  emitRoom(room);
 }
 
 function checkSmartEarlyTermination(room) {
@@ -622,6 +679,7 @@ function getTimerKey(room) {
   if (!room || room.players.length !== 4) return null;
   if (room.phase === 'bidding' && room.biddingTurn !== null) return `bidding:${room.biddingTurn}:${room.currentBid ?? 'none'}:${room.skipped.join('')}`;
   if (room.phase === 'chooseTrump' && room.bidWinner !== null) return `chooseTrump:${room.bidWinner}:${room.roundBid}`;
+  if (room.phase === 'playing' && room.trickResolving) return null;
   if (room.phase === 'playing' && room.turn !== null) return `playing:${room.turn}:${room.trickNumber}:${room.trick.length}`;
   return null;
 }
@@ -751,7 +809,7 @@ function playCardFromHand(room, idx, cardId, automatic = false) {
 
 io.on('connection', socket => {
   socket.on('createRoom', ({ name }) => {
-    const room = makeRoom(socket.id, name || 'Host');
+    const room = makeRoom(socket.id, sanitizeName(name, 'Host'));
     socket.join(room.code);
     socket.emit('joined', { code: room.code });
     emitRoom(room);
@@ -761,7 +819,7 @@ io.on('connection', socket => {
     const room = rooms.get((roomCode || '').toUpperCase());
     if (!room) return socket.emit('errorMessage', 'Room not found.');
 
-    const displayName = name || (mode === 'spectator' ? 'Spectator' : `Player ${occupiedSeatCount(room) + 1}`);
+    const displayName = sanitizeName(name, mode === 'spectator' ? 'Spectator' : `Player ${occupiedSeatCount(room) + 1}`);
     socket.join(room.code);
 
     if (mode === 'spectator') {

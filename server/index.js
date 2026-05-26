@@ -28,7 +28,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "https://theboundgame.vercel.app",
+    origin: true, // This dynamically matches whatever domain calls it, completely destroying the CORS block!
     methods: ["GET", "POST"],
     credentials: true
   },

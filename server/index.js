@@ -12,13 +12,41 @@ const app = express();
 
 const allowedOrigins = [
   'https://theboundgame.vercel.app',
-  'http://localhost:5173'
+  'https://boundweb.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3001'
 ];
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+
+  if (allowedOrigins.includes(origin)) return true;
+
+  try {
+    const url = new URL(origin);
+
+    // Allows your Vercel production + preview deployments.
+    if (
+      url.protocol === 'https:' &&
+      url.hostname.endsWith('.vercel.app') &&
+      (
+        url.hostname.startsWith('boundweb') ||
+        url.hostname.includes('yanuix-projects')
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
-  if (allowedOrigins.includes(origin)) {
+  if (isAllowedOrigin(origin) && origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -28,7 +56,7 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
 
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
+    return res.sendStatus(204);
   }
 
   next();
@@ -38,11 +66,25 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin not allowed by CORS: ${origin}`), false);
+    },
     methods: ['GET', 'POST'],
     credentials: true
   },
   allowEIO3: true
+});
+
+io.engine.on('connection_error', err => {
+  console.log('Engine.IO connection error:', {
+    code: err.code,
+    message: err.message,
+    origin: err.req?.headers?.origin
+  });
 });
 
 const rooms = new Map();
@@ -63,7 +105,7 @@ function code() {
   return c;
 }
 
-function rightOf(i) { return (i + 1) % 4; } // anti-clockwise direction in this app
+function rightOf(i) { return (i + 1) % 4; }
 function teamOf(i) { return i % 2; }
 function teamLabel(team) { return team === 0 ? 'Team A' : 'Team B'; }
 function otherTeamOfPlayer(i) { return 1 - teamOf(i); }
@@ -73,9 +115,14 @@ function isActiveSeat(p) { return Boolean(p && !p.empty && p.id); }
 function occupiedSeatCount(room) { return room.players.filter(isActiveSeat).length; }
 function allActiveSeatsReady(room) { return room.players.length === 4 && room.players.every(p => isActiveSeat(p) && p.connected && p.ready); }
 function seatName(room, idx) { return isActiveSeat(room.players[idx]) ? room.players[idx].name : `Seat ${idx + 1}`; }
+
 function sanitizeName(name, fallback = 'Player') {
   const clean = String(name || '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME_LENGTH);
   return clean || fallback;
+}
+
+function normalizeRoomCode(roomCode) {
+  return String(roomCode || '').trim().toUpperCase();
 }
 
 function createDeck() {
@@ -132,7 +179,6 @@ function roomPublic(room, socketId = null) {
     players,
     spectators,
     meSeat: meSeat >= 0 ? meSeat : null,
-    // Spectator security: only an active player receives their own hidden hand.
     hand: meSeat >= 0 ? room.players[meSeat].hand : [],
     phase: room.phase,
     message: room.message,
@@ -164,7 +210,6 @@ function roomPublic(room, socketId = null) {
     roundBid: room.roundBid,
     nextDealer: room.nextDealer,
     roundNumber: room.roundNumber,
-    // Chat is spectator-only. Active players receive no chat payload.
     chat: spectator ? (room.chat || []) : [],
     noCardHistory: true,
     timer: room.timer ? { deadline: room.timer.deadline, duration: room.timer.duration, key: room.timer.key } : null
@@ -173,16 +218,28 @@ function roomPublic(room, socketId = null) {
 
 function emitRoom(room) {
   ensureRoomTimer(room);
+
   for (const p of room.players) {
-    if (isActiveSeat(p) && p.id) io.to(p.id).emit('state', roomPublic(room, p.id));
+    if (isActiveSeat(p) && p.id) {
+      io.to(p.id).emit('state', roomPublic(room, p.id));
+    }
   }
+
   for (const spectator of room.spectators || []) {
-    if (spectator.id) io.to(spectator.id).emit('state', roomPublic(room, spectator.id));
+    if (spectator.id) {
+      io.to(spectator.id).emit('state', roomPublic(room, spectator.id));
+    }
   }
 }
 
 function clearRoundStateToLobby(room, message) {
-  room.players.forEach(p => { if (isActiveSeat(p)) { p.hand = []; p.ready = false; } });
+  room.players.forEach(p => {
+    if (isActiveSeat(p)) {
+      p.hand = [];
+      p.ready = false;
+    }
+  });
+
   room.phase = 'lobby';
   room.dealer = null;
   room.cutter = null;
@@ -199,8 +256,10 @@ function clearRoundStateToLobby(room, message) {
   room.trickResolving = false;
   room.trickWinner = null;
   room.trickResultMessage = '';
+
   if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
   room.trickResolveTimer = null;
+
   room.trickNumber = 0;
   room.tricksWon = [0, 0];
   room.blackJokerUsed = false;
@@ -214,6 +273,7 @@ function clearRoundStateToLobby(room, message) {
 function makeRoom(hostId, name) {
   const players = Array.from({ length: 4 }, () => emptySeat());
   players[0] = { id: hostId, name, connected: true, ready: false, hand: [], empty: false };
+
   const room = {
     code: code(),
     hostId,
@@ -253,14 +313,19 @@ function makeRoom(hostId, name) {
     chat: [],
     timer: null
   };
+
   rooms.set(room.code, room);
   return room;
 }
 
 function resetForNewRound(room, dealer = null) {
   clearRoomTimer(room);
+
   room.roundNumber += 1;
-  room.players.forEach(p => { if (isActiveSeat(p)) p.hand = []; });
+  room.players.forEach(p => {
+    if (isActiveSeat(p)) p.hand = [];
+  });
+
   room.phase = 'cut';
   room.dealer = dealer ?? Math.floor(Math.random() * 4);
   room.cutter = rightOf(room.dealer);
@@ -277,8 +342,10 @@ function resetForNewRound(room, dealer = null) {
   room.trickResolving = false;
   room.trickWinner = null;
   room.trickResultMessage = '';
+
   if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
   room.trickResolveTimer = null;
+
   room.trickNumber = 0;
   room.tricksWon = [0, 0];
   room.blackJokerUsed = false;
@@ -294,15 +361,18 @@ function resetForNewRound(room, dealer = null) {
 }
 
 function deal(room) {
-  // 3-3-3 deal pattern, moving anti-clockwise from the player right of the dealer.
   let deckIndex = 0;
+
   for (let batch = 0; batch < 3; batch++) {
     for (let offset = 1; offset <= 4; offset++) {
       const playerIdx = (room.dealer + offset) % 4;
-      if (isActiveSeat(room.players[playerIdx])) room.players[playerIdx].hand.push(...room.deck.slice(deckIndex, deckIndex + 3));
+      if (isActiveSeat(room.players[playerIdx])) {
+        room.players[playerIdx].hand.push(...room.deck.slice(deckIndex, deckIndex + 3));
+      }
       deckIndex += 3;
     }
   }
+
   room.phase = 'bidding';
   room.message = `${seatName(room, room.bidStarter)} starts bidding. Bid 6 or higher, or skip.`;
 }
@@ -312,6 +382,7 @@ function nextUnskippedBidder(room, from) {
     const idx = (from + step) % 4;
     if (!room.skipped[idx]) return idx;
   }
+
   return null;
 }
 
@@ -325,7 +396,6 @@ function skipCount(room) {
 
 function getMinimumBid(room, playerIdx) {
   if (room.currentBid !== null && room.currentBid !== 'BOUND') return room.currentBid + 1;
-  // The 5-bid is only available when the previous 3 players skipped and this player is the last unskipped player.
   if (room.currentBid === null && skipCount(room) === 3 && !room.skipped[playerIdx]) return 5;
   return 6;
 }
@@ -353,7 +423,11 @@ function allSkippedNoBid(room) {
 
 function redealAfterAllSkipped(room) {
   clearRoomTimer(room);
-  room.players.forEach(p => { if (isActiveSeat(p)) p.hand = []; });
+
+  room.players.forEach(p => {
+    if (isActiveSeat(p)) p.hand = [];
+  });
+
   room.currentBid = null;
   room.currentBidder = null;
   room.biddingTurn = room.bidStarter;
@@ -366,8 +440,10 @@ function redealAfterAllSkipped(room) {
   room.trickResolving = false;
   room.trickWinner = null;
   room.trickResultMessage = '';
+
   if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
   room.trickResolveTimer = null;
+
   room.trickNumber = 0;
   room.tricksWon = [0, 0];
   room.blackJokerUsed = false;
@@ -385,6 +461,7 @@ function checkBiddingEnd(room) {
   }
 
   const active = activeBidders(room);
+
   if (room.currentBidder !== null && active.length === 1 && active[0] === room.currentBidder) {
     finalizeBid(room, room.currentBidder);
   }
@@ -415,12 +492,15 @@ function findHolder(room, cardType) {
 function illegalJokerPenalty(room, offendingPlayer, reason) {
   const offendingTeam = teamOf(offendingPlayer);
   const otherTeam = 1 - offendingTeam;
+
   room.scores[otherTeam] += 15;
   room.phase = room.scores[otherTeam] >= 54 ? 'gameover' : 'roundover';
+
   if (room.phase === 'gameover') {
     room.gameWinnerTeam = otherTeam;
     room.scores[otherTeam] = Math.max(room.scores[otherTeam], 54);
   }
+
   room.nextDealer = rightOf(offendingPlayer);
   room.message = `${reason} Round ends immediately. ${teamLabel(otherTeam)} gets 15 points. ${teamLabel(offendingTeam)} gets 0 for the round.`;
 }
@@ -431,20 +511,15 @@ function finishMatch(room, winnerTeam, message, loserTeam = null, reason = 'boun
   room.gameLoserTeam = loserTeam;
   room.gameOverReason = reason;
   room.endedByBound = reason === 'bound';
-
-  // Bound is an instant match-ending condition. The scoreboard must clearly
-  // show the winning team as having won the match, even if the previous score
-  // was below 54.
   room.scores[winnerTeam] = 54;
-
-  // Clear active round state so no remaining hand/table state can block the
-  // Game Over UI or the Start New Game flow.
   room.trick = [];
   room.trickResolving = false;
   room.trickWinner = null;
   room.trickResultMessage = '';
+
   if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
   room.trickResolveTimer = null;
+
   room.turn = null;
   room.leader = null;
   room.nextDealer = null;
@@ -464,18 +539,18 @@ function resetMatchForReplay(room) {
 }
 
 function checkStartOfTrickPenalty(room) {
-  // If a player is forced to start trick 3 while holding the Black Joker, the round ends immediately.
   if (room.phase === 'playing' && room.trickNumber === 3 && room.trick.length === 0) {
     const leader = room.leader;
+
     if ((room.players[leader]?.hand || []).some(c => c.type === 'blackJoker')) {
       illegalJokerPenalty(room, leader, `${seatName(room, leader)} had to start trick 3 while holding the Black Joker.`);
       return true;
     }
   }
 
-  // Red Joker cannot be held into trick 9.
   if (room.phase === 'playing' && room.trickNumber === 9 && room.trick.length === 0) {
     const holder = findHolder(room, 'redJoker');
+
     if (holder !== -1) {
       illegalJokerPenalty(room, holder, `${seatName(room, holder)} held the Red Joker until the last trick.`);
       return true;
@@ -486,14 +561,15 @@ function checkStartOfTrickPenalty(room) {
 }
 
 function checkEndOfTrickPenalty(room) {
-  // At the end of trick 3, Black Joker must already be gone.
   if (room.phase === 'playing' && room.trickNumber === 3 && !room.blackJokerUsed) {
     const holder = findHolder(room, 'blackJoker');
+
     if (holder !== -1) {
       illegalJokerPenalty(room, holder, `${seatName(room, holder)} still had the Black Joker after trick 3.`);
       return true;
     }
   }
+
   return false;
 }
 
@@ -503,7 +579,10 @@ function validPlay(room, playerIdx, card) {
   if (room.turn !== playerIdx) return { ok: false, msg: 'Not your turn.' };
 
   const isLead = room.trick.length === 0;
-  if (isJoker(card) && isLead) return { ok: false, msg: 'Jokers cannot start a trick. They can only defend.' };
+
+  if (isJoker(card) && isLead) {
+    return { ok: false, msg: 'Jokers cannot start a trick. They can only defend.' };
+  }
 
   if (card.type === 'redJoker' && !room.blackJokerUsed && !playerHasBothJokers(room, playerIdx)) {
     return { ok: false, msg: 'Red Joker can only be used after the Black Joker, unless you hold both Jokers.' };
@@ -512,23 +591,25 @@ function validPlay(room, playerIdx, card) {
   if (card.type === 'blackJoker' && room.trickNumber > 3) {
     return { ok: true, illegalPenalty: true, msg: 'Black Joker was used after the first 3 tricks.' };
   }
+
   if (card.type === 'redJoker' && room.trickNumber === 9) {
     return { ok: true, illegalPenalty: true, msg: 'Red Joker was used in the last trick.' };
   }
 
-  // If bid is 8 or 9, the starting player of the first trick must lead a Trump Suit card if they have one.
   const numericBid = Number(room.roundBid);
+
   if (isLead && Number.isInteger(numericBid) && numericBid >= 8 && room.trickNumber === 1) {
     const hasTrump = (room.players[playerIdx]?.hand || []).some(c => c.type === 'normal' && c.suit === room.trump);
+
     if (hasTrump && !(card.type === 'normal' && card.suit === room.trump)) {
       return { ok: false, msg: 'Because the bid is 8 or more, the first leader must start with a Trump Suit card if they have one.' };
     }
   }
 
-  // Jokers are suit-less and may be played defensively even if the player has the lead suit.
   if (!isLead && card.type === 'normal') {
     const leadSuit = room.trick[0].card.suit;
     const hasLeadSuit = (room.players[playerIdx]?.hand || []).some(c => c.type === 'normal' && c.suit === leadSuit);
+
     if (hasLeadSuit && card.suit !== leadSuit) {
       return { ok: false, msg: `You must play ${leadSuit} if you have it.` };
     }
@@ -537,18 +618,20 @@ function validPlay(room, playerIdx, card) {
   return { ok: true };
 }
 
-
 function computeTrickWinner(room) {
   const leadSuit = room.trick.find(play => play.card.type === 'normal')?.card.suit || null;
   let best = room.trick[0];
+
   for (const play of room.trick.slice(1)) {
     if (cardBeats(play, best, room.trump, leadSuit)) best = play;
   }
+
   return best.player;
 }
 
 function finishTrick(room) {
   if (!room || room.trick.length !== 4 || room.trickResolving) return;
+
   clearRoomTimer(room);
 
   const winner = computeTrickWinner(room);
@@ -572,11 +655,13 @@ function completeResolvedTrick(roomCode) {
   room.trickResolving = false;
   room.trickWinner = null;
   room.trickResultMessage = '';
+
   if (room.trickResolveTimer) clearTimeout(room.trickResolveTimer);
   room.trickResolveTimer = null;
 
   if (room.bound) {
     const bidderTeam = teamOf(room.bidWinner);
+
     if (teamOf(winner) !== bidderTeam) {
       const winningTeam = 1 - bidderTeam;
       finishMatch(room, winningTeam, `Bound failed. ${teamLabel(winningTeam)} wins the game.`, bidderTeam, 'bound');
@@ -591,9 +676,21 @@ function completeResolvedTrick(roomCode) {
     }
   }
 
-  if (checkEndOfTrickPenalty(room)) { emitRoom(room); return; }
-  if (checkSmartEarlyTermination(room)) { emitRoom(room); return; }
-  if (room.trickNumber >= 9) { scoreRound(room); emitRoom(room); return; }
+  if (checkEndOfTrickPenalty(room)) {
+    emitRoom(room);
+    return;
+  }
+
+  if (checkSmartEarlyTermination(room)) {
+    emitRoom(room);
+    return;
+  }
+
+  if (room.trickNumber >= 9) {
+    scoreRound(room);
+    emitRoom(room);
+    return;
+  }
 
   room.trickNumber += 1;
   room.leader = winner;
@@ -615,18 +712,16 @@ function checkSmartEarlyTermination(room) {
   const tricksWonBiddingTeam = room.tricksWon[biddingTeam];
   const tricksWonOpposingTeam = room.tricksWon[opposingTeam];
 
-  // Condition A: the bidding team reached the target.
-  // The round ends immediately and the score is capped at the declared bid.
   if (tricksWonBiddingTeam >= targetTricks) {
     applySuccessfulBid(room, targetTricks, biddingTeam);
     return true;
   }
 
   const maxPossibleRemainingTricks = totalTricksPerRound - tricksWonBiddingTeam - tricksWonOpposingTeam;
-  const targetImpossible = (tricksWonBiddingTeam + maxPossibleRemainingTricks) < targetTricks
-    || tricksWonOpposingTeam > (totalTricksPerRound - targetTricks);
+  const targetImpossible =
+    (tricksWonBiddingTeam + maxPossibleRemainingTricks) < targetTricks ||
+    tricksWonOpposingTeam > (totalTricksPerRound - targetTricks);
 
-  // Condition B: the defenders have locked the bidding team out mathematically.
   if (targetImpossible) {
     applyFailedBid(room, targetTricks, biddingTeam, opposingTeam, true);
     return true;
@@ -651,6 +746,7 @@ function applyFailedBid(room, bid, bidderTeam, otherTeam, early = false) {
     room.scores[otherTeam] += bid * 2;
     room.message = `${early ? 'Bid became impossible' : 'Bid failed'}. ${teamLabel(bidderTeam)} gets -${bid}; ${teamLabel(otherTeam)} gets ${bid * 2}.`;
   }
+
   finishRoundTransition(room);
 }
 
@@ -686,7 +782,6 @@ function scoreRound(room) {
   }
 }
 
-
 function getTimerKey(room) {
   if (!room || room.players.length !== 4) return null;
   if (room.phase === 'bidding' && room.biddingTurn !== null) return `bidding:${room.biddingTurn}:${room.currentBid ?? 'none'}:${room.skipped.join('')}`;
@@ -703,12 +798,16 @@ function clearRoomTimer(room) {
 
 function ensureRoomTimer(room) {
   const key = getTimerKey(room);
+
   if (!key) {
     clearRoomTimer(room);
     return;
   }
+
   if (room.timer?.key === key && room.timer.deadline > Date.now()) return;
+
   clearRoomTimer(room);
+
   room.timer = {
     key,
     duration: TURN_SECONDS,
@@ -720,10 +819,12 @@ function ensureRoomTimer(room) {
 function handleTimerExpired(roomCode, key) {
   const room = rooms.get(roomCode);
   if (!room || room.timer?.key !== key || getTimerKey(room) !== key) return;
+
   clearRoomTimer(room);
 
   if (room.phase === 'bidding') {
     const idx = room.biddingTurn;
+
     if (idx !== null) {
       room.skipped[idx] = true;
       room.message = `${seatName(room, idx)} timed out and skipped.`;
@@ -737,6 +838,7 @@ function handleTimerExpired(roomCode, key) {
   } else if (room.phase === 'playing') {
     const idx = room.turn;
     const card = chooseAutoCard(room, idx);
+
     if (card) {
       playCardFromHand(room, idx, card.id, true);
     } else {
@@ -750,20 +852,27 @@ function handleTimerExpired(roomCode, key) {
 function chooseDefaultTrump(room, playerIdx) {
   const hand = room.players[playerIdx]?.hand || [];
   const suitScore = Object.fromEntries(suits.map(s => [s, 0]));
+
   for (const card of hand) {
     if (card.type === 'normal') suitScore[card.suit] += 1;
   }
+
   return [...suits].sort((a, b) => suitScore[b] - suitScore[a] || suits.indexOf(a) - suits.indexOf(b))[0] || 'spades';
 }
 
 function applyTrumpChoice(room, idx, suit, automatic = false) {
   if (room.phase !== 'chooseTrump' || idx !== room.bidWinner || !suits.includes(suit)) return false;
+
   room.trump = suit;
   room.phase = 'playing';
   room.leader = rightOf(room.bidWinner);
   room.turn = room.leader;
   room.trickNumber = 1;
-  const autoText = automatic ? `${seatName(room, idx)} timed out, so ${suit} was selected automatically as the Trump Suit.` : `${seatName(room, idx)} chose ${suit} as the Trump Suit.`;
+
+  const autoText = automatic
+    ? `${seatName(room, idx)} timed out, so ${suit} was selected automatically as the Trump Suit.`
+    : `${seatName(room, idx)} chose ${suit} as the Trump Suit.`;
+
   room.message = `${autoText} ${room.bound ? 'Bound is active. ' : ''}${room.players[room.leader].name} starts.`;
   checkStartOfTrickPenalty(room);
   return true;
@@ -774,14 +883,19 @@ function chooseAutoCard(room, idx) {
   const sorted = [...hand].sort((a, b) => {
     const aJoker = isJoker(a);
     const bJoker = isJoker(b);
+
     if (aJoker || bJoker) {
       if (aJoker && bJoker) return (a.type === 'blackJoker' ? 100 : 101) - (b.type === 'blackJoker' ? 100 : 101);
       return aJoker ? 1 : -1;
     }
+
     const suitOrder = { hearts: 0, spades: 1, clubs: 2, diamonds: 3 };
+
     if (suitOrder[a.suit] !== suitOrder[b.suit]) return suitOrder[a.suit] - suitOrder[b.suit];
+
     return rankValue[a.rank] - rankValue[b.rank];
   });
+
   return sorted.find(card => {
     const valid = validPlay(room, idx, card);
     return valid.ok && !valid.illegalPenalty;
@@ -790,11 +904,14 @@ function chooseAutoCard(room, idx) {
 
 function playCardFromHand(room, idx, cardId, automatic = false) {
   if (!room || room.phase !== 'playing') return { ok: false, msg: 'Not playing phase.' };
+
   const hand = room.players[idx]?.hand || [];
   const cardIndex = hand.findIndex(c => c.id === cardId);
+
   if (cardIndex < 0) return { ok: false, msg: 'Card not found.' };
 
   const valid = validPlay(room, idx, hand[cardIndex]);
+
   if (!valid.ok) return { ok: false, msg: valid.msg };
 
   const [card] = hand.splice(cardIndex, 1);
@@ -805,6 +922,7 @@ function playCardFromHand(room, idx, cardId, automatic = false) {
   }
 
   if (card.type === 'blackJoker') room.blackJokerUsed = true;
+
   room.trick.push({ player: idx, card });
 
   if (room.trick.length === 4) {
@@ -820,6 +938,11 @@ function playCardFromHand(room, idx, cardId, automatic = false) {
 }
 
 io.on('connection', socket => {
+  console.log('Socket connected:', {
+    socketId: socket.id,
+    origin: socket.handshake.headers.origin
+  });
+
   socket.on('createRoom', ({ name }) => {
     const room = makeRoom(socket.id, sanitizeName(name, 'Host'));
     socket.join(room.code);
@@ -828,7 +951,7 @@ io.on('connection', socket => {
   });
 
   socket.on('joinRoom', ({ code: roomCode, name, mode = 'player' }) => {
-    const room = rooms.get((roomCode || '').toUpperCase());
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return socket.emit('errorMessage', 'Room not found.');
 
     const displayName = sanitizeName(name, mode === 'spectator' ? 'Spectator' : `Player ${occupiedSeatCount(room) + 1}`);
@@ -843,6 +966,7 @@ io.on('connection', socket => {
     }
 
     const openIdx = room.players.findIndex(p => !isActiveSeat(p));
+
     if (openIdx === -1) {
       room.spectators.push({ id: socket.id, name: displayName, connected: true });
       socket.emit('joined', { code: room.code });
@@ -853,45 +977,58 @@ io.on('connection', socket => {
 
     room.players[openIdx] = { id: socket.id, name: displayName, connected: true, ready: false, hand: [], empty: false };
     socket.emit('joined', { code: room.code });
-    if (occupiedSeatCount(room) === 4) room.message = 'Four players joined. Everyone must ready up before the host can start.';
-    else room.message = `${displayName} joined Seat ${openIdx + 1}.`;
+
+    if (occupiedSeatCount(room) === 4) {
+      room.message = 'Four players joined. Everyone must ready up before the host can start.';
+    } else {
+      room.message = `${displayName} joined Seat ${openIdx + 1}.`;
+    }
+
     emitRoom(room);
   });
 
   socket.on('toggleReady', ({ code: roomCode }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || room.phase !== 'lobby') return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (idx === -1) return;
+
     room.players[idx].ready = !room.players[idx].ready;
+
     const readyCount = room.players.filter(p => isActiveSeat(p) && p.ready && p.connected).length;
     room.message = `${room.players[idx].name} is ${room.players[idx].ready ? 'ready' : 'not ready'}. ${readyCount}/4 ready.`;
     emitRoom(room);
   });
 
   socket.on('startRound', ({ code: roomCode }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || socket.id !== room.hostId) return;
     if (occupiedSeatCount(room) !== 4) return socket.emit('errorMessage', 'Need exactly 4 active players.');
     if (!allActiveSeatsReady(room)) return socket.emit('errorMessage', 'All 4 active players must ready up before the game starts.');
+
     resetForNewRound(room);
     emitRoom(room);
   });
 
   socket.on('cutDeck', ({ code: roomCode, cutAt }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (room.phase !== 'cut' || idx !== room.cutter) return;
+
     const safeCut = Number.isInteger(cutAt) && cutAt > 0 && cutAt < 36 ? cutAt : Math.floor(Math.random() * 35) + 1;
     room.deck = [...room.deck.slice(safeCut), ...room.deck.slice(0, safeCut)];
+
     deal(room);
     emitRoom(room);
   });
 
   socket.on('bid', ({ code: roomCode, value }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (room.phase !== 'bidding' || idx !== room.biddingTurn) return;
 
@@ -906,9 +1043,11 @@ io.on('connection', socket => {
     }
 
     const bid = Number(value);
+
     if (!Number.isInteger(bid) || bid < minBid || bid > 8) {
       return socket.emit('errorMessage', `Your minimum bid is ${minBid}. Select Bound if you want to bid all 9 tricks.`);
     }
+
     if (room.currentBid !== null && room.currentBid !== 'BOUND' && bid <= room.currentBid) {
       return socket.emit('errorMessage', 'Bid must be higher than current bid.');
     }
@@ -922,24 +1061,28 @@ io.on('connection', socket => {
   });
 
   socket.on('skipBid', ({ code: roomCode }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (room.phase !== 'bidding' || idx !== room.biddingTurn) return;
 
     room.skipped[idx] = true;
     room.message = `${seatName(room, idx)} skipped the bid.`;
     checkBiddingEnd(room);
+
     if (room.phase === 'bidding') {
       room.biddingTurn = nextUnskippedBidder(room, idx);
       if (room.biddingTurn !== null) room.message += ` ${seatName(room, room.biddingTurn)} is next.`;
     }
+
     emitRoom(room);
   });
 
   socket.on('chooseTrump', ({ code: roomCode, suit }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (room.phase !== 'chooseTrump' || idx !== room.bidWinner || !suits.includes(suit)) return;
 
@@ -948,17 +1091,21 @@ io.on('connection', socket => {
   });
 
   socket.on('playCard', ({ code: roomCode, cardId }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     const result = playCardFromHand(room, idx, cardId, false);
+
     if (!result.ok) return socket.emit('errorMessage', result.msg);
+
     emitRoom(room);
   });
 
   socket.on('callBoundDuringPlay', ({ code: roomCode }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (room.phase !== 'playing' || idx !== room.bidWinner || room.bound || room.roundBid === 'BOUND') return;
 
@@ -966,6 +1113,7 @@ io.on('connection', socket => {
 
     const bidderTeam = teamOf(room.bidWinner);
     const completedTricks = room.trickNumber - 1;
+
     if (room.tricksWon[bidderTeam] !== completedTricks) {
       return socket.emit('errorMessage', 'You can only call Bound if your team has won every completed trick so far.');
     }
@@ -976,12 +1124,14 @@ io.on('connection', socket => {
   });
 
   socket.on('sendChat', ({ code: roomCode, text }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room) return;
+
     const cleanText = String(text || '').trim().slice(0, 300);
     if (!cleanText) return;
 
     const spectator = (room.spectators || []).find(s => s.id === socket.id);
+
     if (!spectator) {
       return socket.emit('errorMessage', 'Chat is only available to spectators.');
     }
@@ -991,7 +1141,7 @@ io.on('connection', socket => {
   });
 
   socket.on('kickUser', ({ code: roomCode, targetId }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || socket.id !== room.hostId || targetId === room.hostId) return;
 
     const activeIdx = room.players.findIndex(p => isActiveSeat(p) && p.id === targetId);
@@ -1001,6 +1151,7 @@ io.on('connection', socket => {
     if (activeIdx !== -1) {
       targetName = room.players[activeIdx].name;
       room.players[activeIdx] = emptySeat();
+
       if (room.phase !== 'lobby') {
         clearRoundStateToLobby(room, `${targetName} was kicked by the host. The current round was cancelled and the room returned to the lobby.`);
       } else {
@@ -1015,13 +1166,15 @@ io.on('connection', socket => {
     }
 
     io.to(targetId).emit('kicked', 'You were removed from the room by the host.');
+
     const targetSocket = io.sockets.sockets.get(targetId);
     if (targetSocket) targetSocket.leave(room.code);
+
     emitRoom(room);
   });
 
   socket.on('moveToSpectator', ({ code: roomCode, targetId }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || socket.id !== room.hostId) return;
 
     const activeIdx = room.players.findIndex(p => isActiveSeat(p) && p.id === targetId);
@@ -1036,15 +1189,17 @@ io.on('connection', socket => {
     } else {
       room.message = `${player.name} was moved to spectators. Seat ${activeIdx + 1} is now open.`;
     }
+
     emitRoom(room);
   });
 
-
   socket.on('leaveSeat', ({ code: roomCode }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || room.phase !== 'lobby') return;
+
     const idx = room.players.findIndex(p => isActiveSeat(p) && p.id === socket.id);
     if (idx === -1) return;
+
     const player = room.players[idx];
     room.players[idx] = emptySeat();
     room.spectators.push({ id: player.id, name: player.name, connected: player.connected });
@@ -1053,8 +1208,9 @@ io.on('connection', socket => {
   });
 
   socket.on('joinSeat', ({ code: roomCode, seat }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || room.phase !== 'lobby') return;
+
     const targetSeat = Number(seat);
     if (!Number.isInteger(targetSeat) || targetSeat < 0 || targetSeat > 3) return;
     if (isActiveSeat(room.players[targetSeat])) return socket.emit('errorMessage', 'That seat is already taken.');
@@ -1082,8 +1238,9 @@ io.on('connection', socket => {
   });
 
   socket.on('movePlayerToSeat', ({ code: roomCode, targetId, seat }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || socket.id !== room.hostId || room.phase !== 'lobby') return;
+
     const targetSeat = Number(seat);
     if (!Number.isInteger(targetSeat) || targetSeat < 0 || targetSeat > 3) return;
 
@@ -1092,6 +1249,7 @@ io.on('connection', socket => {
 
     const moving = room.players[fromSeat];
     const destination = room.players[targetSeat];
+
     moving.ready = false;
     moving.hand = [];
 
@@ -1106,21 +1264,24 @@ io.on('connection', socket => {
       room.players[targetSeat] = moving;
       room.message = `Host moved ${moving.name} to Seat ${targetSeat + 1} (${teamLabel(teamOf(targetSeat))}).`;
     }
+
     emitRoom(room);
   });
 
   socket.on('nextRound', ({ code: roomCode }) => {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || room.phase !== 'roundover') return;
+
     const dealer = room.nextDealer ?? rightOf(room.bidWinner ?? 0);
     resetForNewRound(room, dealer);
     emitRoom(room);
   });
 
   function handleStartNewGame(roomCode) {
-    const room = rooms.get(roomCode);
+    const room = rooms.get(normalizeRoomCode(roomCode));
     if (!room || room.phase !== 'gameover' || socket.id !== room.hostId) return;
     if (occupiedSeatCount(room) !== 4) return socket.emit('errorMessage', 'Need exactly 4 active players to start a new game.');
+
     resetMatchForReplay(room);
     emitRoom(room);
   }
@@ -1128,12 +1289,23 @@ io.on('connection', socket => {
   socket.on('playAgain', ({ code: roomCode }) => handleStartNewGame(roomCode));
   socket.on('startNewGame', ({ code: roomCode }) => handleStartNewGame(roomCode));
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', reason => {
+    console.log('Socket disconnected:', {
+      socketId: socket.id,
+      reason
+    });
+
     for (const room of rooms.values()) {
-      const p = room.players.find(p => isActiveSeat(p) && p.id === socket.id);
-      const s = (room.spectators || []).find(s => s.id === socket.id);
-      if (p) { p.connected = false; p.ready = false; }
+      const p = room.players.find(player => isActiveSeat(player) && player.id === socket.id);
+      const s = (room.spectators || []).find(spectator => spectator.id === socket.id);
+
+      if (p) {
+        p.connected = false;
+        p.ready = false;
+      }
+
       if (s) s.connected = false;
+
       if (p || s) emitRoom(room);
     }
   });
@@ -1143,7 +1315,8 @@ app.get('/', (req, res) => {
   res.status(200).json({
     status: 'ok',
     name: 'Bound backend',
-    frontend: 'https://theboundgame.vercel.app'
+    frontend: 'https://boundweb.vercel.app',
+    allowedOrigins
   });
 });
 

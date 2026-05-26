@@ -22,7 +22,7 @@ import './styles.css';
 const MAX_NAME_LENGTH = 14;
 
 const BACKEND_URL = import.meta.env.PROD
-  ? 'https://bound-backend-engine.onrender.com'
+  ? (import.meta.env.VITE_BACKEND_URL || 'https://bound-backend-engine-0kgh.onrender.com')
   : 'http://localhost:3001';
 
 const socket = io(BACKEND_URL, {

@@ -27,8 +27,7 @@ const socket = io(import.meta.env.PROD ? 'https://bound-backend-engine.onrender.
   withCredentials: true
 });
 
-c71f16aa5b3afc997c5d
-'♥', spades: '♠', clubs: '♣', diamonds: '♦' };
+const suitSymbols = { hearts: '♥', spades: '♠', clubs: '♣', diamonds: '♦' };
 const suitNames = { hearts: 'Hearts', spades: 'Spades', clubs: 'Clubs', diamonds: 'Diamonds' };
 const suitOrder = { hearts: 0, spades: 1, clubs: 2, diamonds: 3 };
 const rankOrder = { '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, J: 11, Q: 12, K: 13, A: 14 };

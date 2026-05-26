@@ -1,44 +1,17 @@
-# Bound Card Game
+<img width="1205" height="880" alt="Gemini_Generated_Image_93yvce93yvce93yv" src="https://github.com/user-attachments/assets/a0504cd0-6121-4e6a-bcfb-5cbff6fdc9f0" />
 
-A real-time 4-player online multiplayer implementation of **Bound**.
+How "Bound" Came to Life: The Backstory ☕
 
-## Major rules included
+Honestly? This whole project started because we were completely losing our minds with boredom between lectures at uni. Instead of actually paying attention or doing something productive, we spent every free minute huddled over a deck of cards, tweaking rules, arguments over trumps, and playing this custom version of Hokm until the cards were literally falling apart.
 
-- 36-card custom deck.
-- 4 active players, opposite players are teammates.
-- 3-3-3 dealing pattern.
-- Bidding starts from the player to the right of the shuffler/dealer.
-- Minimum bid is 6.
-- Bid 5 is only available if the first 3 players skip.
-- If all 4 players skip, the cards are reshuffled and redealt.
-- The winning bidder chooses the **Trump Suit** before play starts.
-- Bound replaces a 9-trick bid and still routes through Trump Suit selection.
-- In-game Bound can be called during play up to trick 7, following the original Bound rules.
-- Smart Early Termination is preserved:
-  - The round ends immediately when the bidding team reaches its target.
-  - The round ends immediately when the bidding team can no longer mathematically reach its target.
-- Played-card history is hidden; only the current trick pile is shown.
-- Spectator mode hides all player hands.
-- Host controls: kick users or move active players to spectators.
+Eventually, we got tired of carrying a physical deck everywhere (and getting side-eyed by professors), so we figured, *"We're literally studying this stuff, why don't we just build an online version so we can play on our laptops?"* That's how **Bound** went from a time-killer in the university common room to a fully coded multiplayer website.
 
-## Run locally
+#### What We Actually Built (The Dev Breakdown):
 
-```powershell
-npm.cmd run install:all
-npm.cmd run dev
-```
+* **The Custom 36-Card Chaos:** We ditched the standard deck. It's 6-A for Spades and Hearts, 7-A for Clubs and Diamonds, plus a Black and Red Joker thrown in just to mess with everyone's strategy.
+* **The Anti-Clockwise Grind:** Turns, bidding, and card-throwing strictly move anti-clockwise. No exceptions.
+* **The "15-Point" Joker Traps:** If you hold the Black Joker past Round 3, or if you're dumb enough to save the Red Joker for the absolute final trick (Round 9), the game calls a foul, ends the round, and hands the other team a free +15 points.
+* **Smart Rage-Quitting (Early Termination):** We coded a math checker that runs after every single trick. The exact second a team hits their bid target or the exact moment it becomes mathematically impossible for them to win the round automatically cuts short, updates the scores, and shuffles a fresh deck. No wasted time.
+* **Going "Bound":** If you're feeling cocky before Round 7 and think your hand can sweep all 9 tricks, you call **Bound**. Pull it off? You win the whole match on the spot. Fail even one trick? Instant match over, you lose. First team to 54 standard points wins otherwise.
 
-Open:
-
-```text
-http://localhost:5173
-```
-
-## Build for deployment
-
-```powershell
-npm.cmd run build
-npm.cmd start
-```
-
-Deploy as a Node.js web service, not a static-only website.
+It started as a joke to pass the time between classes, but now it's a fully functional, highly competitive mental battlefield. Pull up a seat in the lobby, don't get trapped by the Jokers, and let's see who actually owns the table.

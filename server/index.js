@@ -26,12 +26,13 @@ app.use((req, res, next) => {
 
 const server = http.createServer(app);
 
-const io = new Server(server, { 
-  cors: { 
-    origin: "*",
-    methods: ["GET", "POST"]
+const io = new Server(server, {
+  cors: {
+    origin: "https://theboundgame.vercel.app",
+    methods: ["GET", "POST"],
+    credentials: true
   },
-  transports: ["websocket"]
+  allowEIO3: true
 });
 
 const rooms = new Map();
